@@ -1,6 +1,6 @@
 # NEAR Bridge Status Bot
 
-A Telegram bot that provides real-time status updates for the NEAR Protocol bridge ecosystem. Monitor bridge health, Aurora compatibility, recent transactions, and wallet balances — all without leaving Telegram.
+A Telegram bot that provides real-time NEAR Protocol network and bridge status information. Users can monitor block height, gas prices, validator activity, and cross-chain bridge health directly from Telegram. Designed to keep the NEAR community informed and engaged with the ecosystem.
 
 ---
 
@@ -12,8 +12,6 @@ A Telegram bot that provides real-time status updates for the NEAR Protocol brid
 ---
 
 ## Installation
-
-Clone the repository and install dependencies:
 
 git clone https://github.com/your-username/near-bridge-bot.git
 cd near-bridge-bot
@@ -28,11 +26,11 @@ pip install -r requirements.txt
 3. Copy the token BotFather provides
 4. Set it as an environment variable:
 
-export BOT_TOKEN=your_token_here
+export BOT_TOKEN=your_telegram_bot_token_here
 
 Or create a `.env` file in the project root:
 
-BOT_TOKEN=your_token_here
+BOT_TOKEN=your_telegram_bot_token_here
 
 ---
 
@@ -45,28 +43,24 @@ python bot.py
 ## Available Commands
 
 | Command | Description |
-|---------|-------------|
+|---|---|
 | `/start` | Start the bot and see a welcome message |
-| `/help` | Display all available commands and usage |
-| `/status` | Check current NEAR network status |
-| `/bridge` | View NEAR bridge health and metrics |
-| `/aurora` | Get Aurora EVM compatibility status |
-| `/recent` | Show recent bridge transactions |
-| `/balance` | Look up a NEAR wallet balance |
+| `/help` | Show all available commands and usage info |
+| `/status` | Get current NEAR network status |
+| `/block` | View the latest block height and details |
+| `/gas` | Check current gas prices on NEAR |
+| `/bridge` | View Rainbow Bridge status and health |
+| `/validators` | List active validators and their stats |
 
 ---
 
-## Deploy
+## Deployment
 
-**Railway** (recommended): Push to GitHub, connect your repo at [railway.app](https://railway.app), and add `BOT_TOKEN` as an environment variable. Railway auto-detects the `Procfile`.
+Deploy instantly to [Railway](https://railway.app) or [Heroku](https://heroku.com) using the included `Procfile`:
 
-**Heroku**: 
-heroku create
-heroku config:set BOT_TOKEN=your_token_here
-git push heroku main
-
-The included `Procfile` contains:
 worker: python bot.py
+
+Push your code, set the `BOT_TOKEN` environment variable in your platform's dashboard, and your bot will run continuously in the cloud.
 
 ---
 

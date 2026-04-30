@@ -1,6 +1,6 @@
 # NEAR Bridge Status Bot
 
-A Telegram bot that provides real-time status updates for the NEAR Protocol bridge and ecosystem. Monitor block production, validator activity, wNEAR metrics, and bridge health — all from within Telegram.
+A Telegram bot that provides real-time status updates for the NEAR Protocol bridge. Monitor bridge activity, gas prices, and validator information directly from Telegram. Designed to keep users connected to the NEAR ecosystem with instant, well-formatted data.
 
 ---
 
@@ -23,13 +23,14 @@ pip install -r requirements.txt
 
 1. Open Telegram and start a chat with [@BotFather](https://t.me/BotFather)
 2. Send `/newbot` and follow the prompts to create your bot
-3. Copy the token provided and set it as an environment variable:
+3. Copy the token provided by BotFather
+4. Set it as an environment variable:
 
-export BOT_TOKEN=your_telegram_bot_token_here
+export BOT_TOKEN=your_token_here
 
 Or create a `.env` file in the project root:
 
-BOT_TOKEN=your_telegram_bot_token_here
+BOT_TOKEN=your_token_here
 
 ---
 
@@ -43,18 +44,12 @@ python bot.py
 
 | Command | Description |
 |---|---|
-| `/start` | Start the bot and see the welcome message |
-| `/help` | Display help and usage information |
-| `/status` | Show current NEAR network status |
-| `/bridge` | Display NEAR bridge health and activity |
-| `/wnear` | Show wNEAR token metrics and stats |
-| `/blocks` | View latest block production data |
-| `/validators` | List active validators and their status |
-| `/cmd_status` | Alias for `/status` |
-| `/cmd_bridge` | Alias for `/bridge` |
-| `/cmd_wnear` | Alias for `/wnear` |
-| `/cmd_blocks` | Alias for `/blocks` |
-| `/cmd_validators` | Alias for `/validators` |
+| `/start` | Start the bot and see a welcome message |
+| `/help` | Display all available commands |
+| `/status` | Get current NEAR bridge status |
+| `/bridge` | View bridge transaction activity |
+| `/gas` | Check current gas prices on NEAR |
+| `/validators` | List active NEAR validators |
 
 ---
 
@@ -65,6 +60,16 @@ Deploy instantly to [Railway](https://railway.app) or [Heroku](https://heroku.co
 worker: python bot.py
 
 Push to your platform of choice and set the `BOT_TOKEN` environment variable in the dashboard. The bot will start automatically.
+
+---
+
+## Project Structure
+
+near-bridge-bot/
+├── bot.py
+├── requirements.txt
+├── Procfile
+└── .env.example
 
 ---
 

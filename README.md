@@ -1,29 +1,23 @@
 # NEAR Bridge Status Bot
 
-A Telegram bot that provides real-time status updates for the NEAR Protocol bridge. Monitor bridge activity, gas prices, and validator information directly from Telegram. Designed to keep users connected to the NEAR ecosystem with instant, well-formatted data.
-
----
+A Telegram bot that provides real-time NEAR Protocol network and bridge status updates. Users can monitor block height, gas prices, and bridge activity directly from Telegram. Designed to keep the NEAR ecosystem community informed and engaged.
 
 ## Prerequisites
 
 - Python 3.9+
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
----
-
 ## Installation
 
-git clone https://github.com/your-username/near-bridge-bot.git
+git clone https://github.com/yourname/near-bridge-bot.git
 cd near-bridge-bot
 pip install -r requirements.txt
-
----
 
 ## Configuration
 
 1. Open Telegram and start a chat with [@BotFather](https://t.me/BotFather)
 2. Send `/newbot` and follow the prompts to create your bot
-3. Copy the token provided by BotFather
+3. Copy the token BotFather provides
 4. Set it as an environment variable:
 
 export BOT_TOKEN=your_token_here
@@ -32,36 +26,36 @@ Or create a `.env` file in the project root:
 
 BOT_TOKEN=your_token_here
 
----
-
 ## Running
 
 python bot.py
 
----
-
 ## Available Commands
 
 | Command | Description |
-|---|---|
+|------------|------------------------------------------|
 | `/start` | Start the bot and see a welcome message |
-| `/help` | Display all available commands |
-| `/status` | Get current NEAR bridge status |
-| `/bridge` | View bridge transaction activity |
-| `/gas` | Check current gas prices on NEAR |
-| `/validators` | List active NEAR validators |
+| `/help` | Show all available commands |
+| `/status` | Current NEAR network status |
+| `/block` | Latest block height and timestamp |
+| `/gas` | Current gas price on NEAR |
+| `/bridge` | NEAR bridge activity and status |
+| `/summary` | Full summary of all network metrics |
 
----
+## Deploy
 
-## Deployment
-
-Deploy instantly to [Railway](https://railway.app) or [Heroku](https://heroku.com) using the included `Procfile`:
+Deploy to Railway or Heroku in one step — add a `Procfile` with `worker: python bot.py` and push to your connected repo.
 
 worker: python bot.py
 
-Push to your platform of choice and set the `BOT_TOKEN` environment variable in the dashboard. The bot will start automatically.
+**Railway (recommended):**
 
----
+railway up
+
+**Heroku:**
+
+heroku create
+git push heroku main
 
 ## Project Structure
 
@@ -69,9 +63,13 @@ near-bridge-bot/
 ├── bot.py
 ├── requirements.txt
 ├── Procfile
-└── .env.example
+└── .env
 
----
+## Requirements
+
+python-telegram-bot
+requests
+python-dotenv
 
 ## License
 

@@ -4,320 +4,323 @@ import aiohttp
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── NEAR RPC endpoint ─────────────────────────────────────────────────────────
 NEAR_RPC = "https://rpc.mainnet.near.org"
 
-# Rainbow Bridge contracts (NEAR side)
-BRIDGE_CONTRACT = "factory.bridge.near"
-ETH_CUSTODIAN   = "aurora"                     # ETH→NEAR entry point on NEAR
-AURORA_CONTRACT = "aurora"
+# ── Rainbow Bridge contract addresses ────────────────────────────────────────
+ETH_CUSTODIAN = "factory.bridge.near"
+AURORA_ACCOUNT = "aurora"
+BRIDGE_TOKEN_FACTORY = "factory.bridge.near"
+WORMHOLE_ACCOUNT = "wormhole.near"
 
-# ── Core RPC helper ───────────────────────────────────────────────────────────
+# ── Generic RPC helper ────────────────────────────────────────────────────────
 async def _rpc(method: str, params: dict) -> dict:
-    """
-    Fire a JSON-RPC request at the NEAR mainnet endpoint.
-    Returns the 'result' key on success, raises RuntimeError on failure.
-    """
+    """Send a JSON-RPC request to the NEAR mainnet endpoint."""
     payload = {
         "jsonrpc": "2.0",
-        "id":      "bridge-bot",
-        "method":  method,
-        "params":  params,
+        "id": "bridge-bot",
+        "method": method,
+        "params": params,
     }
     async with aiohttp.ClientSession() as session:
-        async with session.post(
-            NEAR_RPC,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            data = await resp.json(content_type=None)
-
-    if "error" in data:
-        raise RuntimeError(data["error"].get("message", "RPC error"))
-    return data.get("result", {})
+        async with session.post(NEAR_RPC, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            data = await resp.json()
+            if "error" in data:
+                raise RuntimeError(data["error"].get("message", "RPC error"))
+            return data.get("result", {})
 
 
 # ── NEAR helper functions ─────────────────────────────────────────────────────
+
 async def get_network_status() -> dict:
-    """
-    Fetch general NEAR network / node status.
-    Returns a dict with chain_id, latest_block_height, sync_info, etc.
-    """
-    result = await _rpc("status", {})
-    return {
-        "chain_id":     result.get("chain_id", "unknown"),
-        "node_version": result.get("version", {}).get("version", "?"),
-        "protocol":     result.get("protocol_version", "?"),
-        "block_height": result.get("sync_info", {}).get("latest_block_height", "?"),
-        "block_hash":   result.get("sync_info", {}).get("latest_block_hash", "?"),
-        "syncing":      result.get("sync_info", {}).get("syncing", False),
-    }
+    """Fetch current NEAR network / node status."""
+    return await _rpc("status", [None])
 
 
 async def get_bridge_account_info(account_id: str) -> dict:
-    """
-    Return balance + storage usage for any NEAR account (bridge contracts).
-    """
-    result = await _rpc("query", {
-        "request_type": "view_account",
-        "finality":     "final",
-        "account_id":   account_id,
-    })
-    raw_balance = int(result.get("amount", 0))
-    near_balance = raw_balance / 1e24          # yoctoNEAR → NEAR
-    return {
-        "account_id":    account_id,
-        "balance_near":  round(near_balance, 4),
-        "storage_bytes": result.get("storage_usage", 0),
-        "block_height":  result.get("block_height", "?"),
-    }
+    """Fetch on-chain account info for a bridge-related account."""
+    return await _rpc(
+        "query",
+        {
+            "request_type": "view_account",
+            "finality": "final",
+            "account_id": account_id,
+        },
+    )
 
 
 async def get_latest_block() -> dict:
-    """
-    Fetch the most recently finalised NEAR block.
-    """
-    result = await _rpc("block", {"finality": "final"})
-    header = result.get("header", {})
-    return {
-        "height":        header.get("height", "?"),
-        "hash":          header.get("hash", "?"),
-        "timestamp_ns":  header.get("timestamp", 0),
-        "gas_price":     header.get("gas_price", "?"),
-        "validator":     header.get("block_ordinal", "?"),
-        "chunk_count":   len(result.get("chunks", [])),
-    }
+    """Return the most-recent finalized block details."""
+    return await _rpc("block", {"finality": "final"})
 
 
-async def get_gas_price() -> dict:
+async def get_bridge_token_balance(account_id: str, token_contract: str) -> str:
     """
-    Return the current NEAR gas price (in yoctoNEAR per gas unit).
+    Call ft_balance_of on a bridged-token contract for a given account.
+    Returns the raw u128 balance string.
     """
-    result = await _rpc("gas_price", [None])   # None → latest block
-    gp_raw = int(result.get("gas_price", 0))
-    return {
-        "yocto_per_gas": gp_raw,
-        "tgas_cost_near": round(gp_raw * 1e12 / 1e24, 6),   # cost of 1 TGas
-    }
+    import json as _json
+    args_bytes = _json.dumps({"account_id": account_id}).encode()
+    import base64 as _b64
+    args_b64 = _b64.b64encode(args_bytes).decode()
 
-
-async def get_bridge_token_list() -> list[dict]:
-    """
-    Call the bridge factory contract to list the first page of bridged tokens.
-    Falls back gracefully if the contract view call fails.
-    """
-    try:
-        import json, base64
-        args_b64 = base64.b64encode(
-            json.dumps({"from_index": 0, "limit": 10}).encode()
-        ).decode()
-        result = await _rpc("query", {
+    result = await _rpc(
+        "query",
+        {
             "request_type": "call_function",
-            "finality":     "final",
-            "account_id":   BRIDGE_CONTRACT,
-            "method_name":  "get_tokens",
-            "args_base64":  args_b64,
-        })
-        raw = bytes(result.get("result", []))
-        tokens = json.loads(raw.decode()) if raw else []
-        return tokens
+            "finality": "final",
+            "account_id": token_contract,
+            "method_name": "ft_balance_of",
+            "args_base64": args_b64,
+        },
+    )
+    raw = bytes(result["result"])
+    balance = _json.loads(raw.decode())
+    return balance
+
+
+async def get_recent_bridge_transactions(account_id: str, limit: int = 5) -> list:
+    """
+    Query the NEAR indexer API for recent transactions involving a bridge account.
+    Falls back gracefully if the indexer is unreachable.
+    """
+    url = f"https://api.nearblocks.io/v1/account/{account_id}/txns?limit={limit}&order=desc"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("txns", [])
     except Exception as exc:
-        logger.warning("Token list fetch failed: %s", exc)
-        return []
+        logger.warning("Indexer fetch failed: %s", exc)
+    return []
 
 
-# ── /start and /help ──────────────────────────────────────────────────────────
+# ── /start & /help ────────────────────────────────────────────────────────────
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Welcome message."""
     text = (
         "🌉 *NEAR Bridge Status Bot*\n\n"
-        "Monitor the Rainbow Bridge (NEAR ↔ Ethereum) in real time.\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📋 *Commands*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "/status   — Network & bridge health\n"
-        "/block    — Latest finalised block\n"
-        "/gas      — Current gas price\n"
-        "/bridge   — Bridge contract balances\n"
-        "/tokens   — Bridged ERC-20 tokens\n"
-        "/help     — Show this menu\n\n"
-        "Built on the [NEAR Rainbow Bridge](https://rainbowbridge.app) 🌈"
+        "Monitor the Rainbow Bridge and NEAR network in real-time.\n\n"
+        "*Available commands:*\n"
+        "• /status — NEAR network health & latest block\n"
+        "• /bridge — Rainbow Bridge contract overview\n"
+        "• /aurora — Aurora EVM account info\n"
+        "• /recent — Recent Rainbow Bridge transactions\n"
+        "• /balance `<account> <token_contract>` — Bridged token balance\n"
+        "• /help — Show this menu\n\n"
+        "🔗 Powered by [NEAR Protocol](https://near.org)"
     )
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-    )
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mirror of start — always reachable via /help."""
     await start(update, context)
 
 
 # ── Command handlers ──────────────────────────────────────────────────────────
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /status — Show overall NEAR network health plus bridge account state.
-    """
+    """/status — NEAR network health and latest finalized block."""
     await update.message.reply_text("⏳ Fetching network status…")
     try:
-        net   = await get_network_status()
-        sync  = "✅ Synced" if not net["syncing"] else "⚠️ Syncing"
-        text  = (
-            "🌐 *NEAR Network Status*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔗 Chain ID       : `{net['chain_id']}`\n"
-            f"📦 Block Height   : `{net['block_height']:,}`\n"
-            f"🔑 Block Hash     : `{str(net['block_hash'])[:12]}…`\n"
-            f"⚙️  Protocol ver  : `{net['protocol']}`\n"
-            f"🖥  Node version  : `{net['node_version']}`\n"
-            f"🔄 Sync status   : {sync}\n\n"
-            "🌉 *Bridge Contracts*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• `factory.bridge.near`\n"
-            f"• `aurora` (ETH custodian)\n\n"
-            "_Use /bridge for contract balances_"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-    except Exception as exc:
-        logger.error("status_command: %s", exc)
-        await update.message.reply_text(f"❌ Error fetching status:\n`{exc}`", parse_mode="Markdown")
+        net = await get_network_status()
+        block = await get_latest_block()
 
+        chain_id = net.get("chain_id", "N/A")
+        version = net.get("version", {}).get("version", "N/A")
+        protocol = net.get("protocol_version", "N/A")
+        node_count = len(net.get("validators", []))
+        sync = net.get("sync_info", {})
+        latest_height = sync.get("latest_block_height", "N/A")
+        syncing = "✅ Synced" if not sync.get("syncing") else "🔄 Syncing"
 
-async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /block — Display the latest finalised block details.
-    """
-    await update.message.reply_text("⏳ Fetching latest block…")
-    try:
-        blk = await get_latest_block()
-        ts_s = int(blk["timestamp_ns"]) // 1_000_000_000
-        from datetime import datetime, timezone
-        dt = datetime.fromtimestamp(ts_s, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        b_height = block.get("header", {}).get("height", "N/A")
+        b_hash = block.get("header", {}).get("hash", "N/A")[:12] + "…"
+        b_time = block.get("header", {}).get("timestamp_nanosec", 0)
+        import datetime
+        b_dt = datetime.datetime.utcfromtimestamp(int(b_time) / 1e9).strftime("%Y-%m-%d %H:%M:%S UTC") if b_time else "N/A"
 
         text = (
-            "📦 *Latest Finalised Block*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔢 Height      : `{int(blk['height']):,}`\n"
-            f"#️⃣  Hash        : `{str(blk['hash'])[:16]}…`\n"
-            f"🕐 Time        : `{dt}`\n"
-            f"⛽ Gas Price   : `{blk['gas_price']}`\n"
-            f"🧩 Chunks      : `{blk['chunk_count']}`\n\n"
-            "_NEAR produces blocks roughly every second_ ⚡"
+            "📡 *NEAR Network Status*\n"
+            "──────────────────────\n"
+            f"🔗 Chain ID:         `{chain_id}`\n"
+            f"🛠 Node version:     `{version}`\n"
+            f"📜 Protocol ver.:   `{protocol}`\n"
+            f"👥 Active validators:`{node_count}`\n"
+            f"🔄 Sync state:       {syncing}\n"
+            f"📦 Latest height:   `{latest_height}`\n\n"
+            "🧱 *Latest Finalized Block*\n"
+            "──────────────────────\n"
+            f"📏 Height:  `{b_height}`\n"
+            f"🔑 Hash:    `{b_hash}`\n"
+            f"🕐 Time:    `{b_dt}`\n"
         )
-        await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as exc:
-        logger.error("block_command: %s", exc)
-        await update.message.reply_text(f"❌ Error:\n`{exc}`", parse_mode="Markdown")
+        logger.exception("status_command failed")
+        text = f"❌ Error fetching status:\n`{exc}`"
 
-
-async def gas_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /gas — Show current NEAR gas price.
-    """
-    await update.message.reply_text("⏳ Fetching gas price…")
-    try:
-        gp = await get_gas_price()
-        text = (
-            "⛽ *NEAR Gas Price*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Per gas unit  : `{gp['yocto_per_gas']:,}` yoctoNEAR\n"
-            f"💸 1 TGas cost   : `{gp['tgas_cost_near']}` NEAR\n\n"
-            "📝 *Bridge Tx Estimates*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"  ETH→NEAR lock  : ~300 TGas "
-            f"≈ `{round(gp['tgas_cost_near']*300,4)}` NEAR\n"
-            f"  NEAR→ETH burn  : ~100 TGas "
-            f"≈ `{round(gp['tgas_cost_near']*100,4)}` NEAR\n\n"
-            "_Gas prices on NEAR are extremely stable_ ✅"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-    except Exception as exc:
-        logger.error("gas_command: %s", exc)
-        await update.message.reply_text(f"❌ Error:\n`{exc}`", parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def bridge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /bridge — Show balances & storage for key Rainbow Bridge contracts.
-    """
-    await update.message.reply_text("⏳ Querying bridge contracts…")
-    contracts = [BRIDGE_CONTRACT, AURORA_CONTRACT]
-    lines = ["🌉 *Rainbow Bridge Contract Status*\n━━━━━━━━━━━━━━━━━━━━━━"]
-    for acct in contracts:
-        try:
-            info = await get_bridge_account_info(acct)
-            storage_kb = round(info["storage_bytes"] / 1024, 2)
-            lines.append(
-                f"\n📄 `{info['account_id']}`\n"
-                f"   💰 Balance : `{info['balance_near']:,}` NEAR\n"
-                f"   🗄  Storage : `{storage_kb:,}` KB\n"
-                f"   📦 At block: `{info['block_height']:,}`"
-            )
-        except Exception as exc:
-            lines.append(f"\n⚠️ `{acct}` — fetch failed: {exc}")
-
-    lines.append(
-        "\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🔗 [Rainbow Bridge App](https://rainbowbridge.app)"
-    )
-    await update.message.reply_text(
-        "\n".join(lines),
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-    )
-
-
-async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /tokens — List bridged ERC-20 tokens registered on factory.bridge.near.
-    """
-    await update.message.reply_text("⏳ Fetching bridged token list…")
+    """/bridge — Rainbow Bridge token-factory contract overview."""
+    await update.message.reply_text("⏳ Fetching Rainbow Bridge info…")
     try:
-        tokens = await get_bridge_token_list()
-        if tokens:
-            lines = ["🪙 *Bridged ERC-20 Tokens (first 10)*\n━━━━━━━━━━━━━━━━━━━━━━"]
-            for i, token in enumerate(tokens, 1):
-                if isinstance(token, str):
-                    lines.append(f"{i}. `{token}`")
-                elif isinstance(token, dict):
-                    name = token.get("name") or token.get("symbol") or str(token)
-                    lines.append(f"{i}. `{name}`")
-            lines.append(
-                "\n━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔍 Full list: [NEAR Explorer](https://nearblocks.io/address/factory.bridge.near)"
-            )
-            text = "\n".join(lines)
-        else:
-            # Provide curated list as fallback
-            text = (
-                "🪙 *Well-Known Rainbow Bridge Tokens*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "1. `wETH` — Wrapped Ether\n"
-                "2. `USDC` — USD Coin\n"
-                "3. `USDT` — Tether USD\n"
-                "4. `DAI`  — Dai Stablecoin\n"
-                "5. `WBTC` — Wrapped Bitcoin\n"
-                "6. `LINK` — Chainlink\n"
-                "7. `UNI`  — Uniswap\n"
-                "8. `AAVE` — Aave\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔍 [View all tokens](https://nearblocks.io/address/factory.bridge.near)"
-            )
-        await update.message.reply_text(
-            text,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
+        info = await get_bridge_account_info(BRIDGE_TOKEN_FACTORY)
+
+        amount_near = int(info.get("amount", 0)) / 1e24
+        locked = int(info.get("locked", 0)) / 1e24
+        storage = info.get("storage_usage", 0)
+        code_hash = info.get("code_hash", "N/A")
+
+        text = (
+            "🌉 *Rainbow Bridge — Token Factory*\n"
+            "──────────────────────────────────\n"
+            f"📋 Account:     `{BRIDGE_TOKEN_FACTORY}`\n"
+            f"💰 Balance:     `{amount_near:,.4f} NEAR`\n"
+            f"🔒 Locked:      `{locked:,.4f} NEAR`\n"
+            f"💾 Storage:     `{storage:,} bytes`\n"
+            f"🔑 Code hash:   `{code_hash[:16]}…`\n\n"
+            "ℹ️ The token factory deploys bridged ERC-20 contracts on NEAR.\n"
+            "🔗 [Explorer](https://nearblocks.io/address/factory.bridge.near)"
         )
     except Exception as exc:
-        logger.error("tokens_command: %s", exc)
-        await update.message.reply_text(f"❌ Error:\n`{exc}`", parse_mode="Markdown")
+        logger.exception("bridge_command failed")
+        text = f"❌ Error fetching bridge info:\n`{exc}`"
+
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+async def aurora_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/aurora — Aurora EVM account info on NEAR."""
+    await update.message.reply_text("⏳ Fetching Aurora account info…")
+    try:
+        info = await get_bridge_account_info(AURORA_ACCOUNT)
+
+        amount_near = int(info.get("amount", 0)) / 1e24
+        locked = int(info.get("locked", 0)) / 1e24
+        storage = info.get("storage_usage", 0)
+        code_hash = info.get("code_hash", "N/A")
+
+        text = (
+            "🌅 *Aurora EVM on NEAR*\n"
+            "───────────────────────\n"
+            f"📋 Account:   `aurora`\n"
+            f"💰 Balance:   `{amount_near:,.4f} NEAR`\n"
+            f"🔒 Locked:    `{locked:,.4f} NEAR`\n"
+            f"💾 Storage:   `{storage:,} bytes`\n"
+            f"🔑 Code hash: `{code_hash[:16]}…`\n\n"
+            "ℹ️ Aurora is an EVM environment running as a NEAR smart contract, "
+            "enabling Ethereum apps to run on NEAR with near-zero gas fees.\n"
+            "🔗 [aurora.dev](https://aurora.dev)"
+        )
+    except Exception as exc:
+        logger.exception("aurora_command failed")
+        text = f"❌ Error fetching Aurora info:\n`{exc}`"
+
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/recent — Show recent Rainbow Bridge transactions."""
+    await update.message.reply_text("⏳ Fetching recent bridge transactions…")
+    try:
+        txns = await get_recent_bridge_transactions(BRIDGE_TOKEN_FACTORY, limit=5)
+
+        if not txns:
+            await update.message.reply_text(
+                "ℹ️ No recent transactions found (indexer may be rate-limited).\n"
+                f"Check manually: https://nearblocks.io/address/{BRIDGE_TOKEN_FACTORY}"
+            )
+            return
+
+        lines = ["🔄 *Recent Rainbow Bridge Txns*\n──────────────────────────────"]
+        for i, tx in enumerate(txns[:5], 1):
+            tx_hash = tx.get("transaction_hash", "N/A")
+            short_hash = tx_hash[:10] + "…" if len(tx_hash) > 10 else tx_hash
+            signer = tx.get("signer_account_id", "N/A")
+            receiver = tx.get("receiver_account_id", "N/A")
+            status = "✅" if tx.get("outcomes", {}).get("status") != "FAILURE" else "❌"
+            block_ts = tx.get("block_timestamp", 0)
+            import datetime
+            ts = datetime.datetime.utcfromtimestamp(int(block_ts) / 1e9).strftime("%m-%d %H:%M") if block_ts else "N/A"
+
+            lines.append(
+                f"\n*#{i}* {status} `{short_hash}`\n"
+                f"  👤 From:  `{signer}`\n"
+                f"  📨 To:    `{receiver}`\n"
+                f"  🕐 Time:  `{ts} UTC`"
+            )
+
+        lines.append(
+            f"\n🔗 [View all on NearBlocks]"
+            f"(https://nearblocks.io/address/{BRIDGE_TOKEN_FACTORY})"
+        )
+        text = "\n".join(lines)
+
+    except Exception as exc:
+        logger.exception("recent_command failed")
+        text = f"❌ Error fetching transactions:\n`{exc}`"
+
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/balance <account_id> <token_contract> — Bridged token balance."""
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ Usage: `/balance <account_id> <token_contract>`\n\n"
+            "Example:\n"
+            "`/balance alice.near dac17f958d2ee523a2206206994597c13d831ec7.factory.bridge.near`",
+            parse_mode="Markdown",
+        )
+        return
+
+    account_id = context.args[0]
+    token_contract = context.args[1]
+    await update.message.reply_text(f"⏳ Fetching balance for `{account_id}`…", parse_mode="Markdown")
+
+    try:
+        raw_balance = await get_bridge_token_balance(account_id, token_contract)
+        # Most bridged tokens use 18 decimals (ERC-20 standard via Rainbow Bridge)
+        decimals = 18
+        try:
+            human = int(raw_balance) / (10 ** decimals)
+            human_str = f"{human:,.6f}"
+        except Exception:
+            human_str = raw_balance
+
+        text = (
+            "💰 *Bridged Token Balance*\n"
+            "──────────────────────────\n"
+            f"👤 Account:  `{account_id}`\n"
+            f"📜 Contract: `{token_contract}`\n"
+            f"💵 Balance:  `{human_str}` _(18 dec assumed)_\n"
+            f"🔢 Raw:      `{raw_balance}`\n\n"
+            f"🔗 [View on NearBlocks](https://nearblocks.io/address/{account_id})"
+        )
+    except Exception as exc:
+        logger.exception("balance_command failed")
+        text = (
+            f"❌ Could not fetch balance.\n"
+            f"Error: `{exc}`\n\n"
+            "Make sure the account exists and the token contract is valid."
+        )
+
+    await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
@@ -326,10 +329,10 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("block", block_command))
-    application.add_handler(CommandHandler("gas", gas_command))
     application.add_handler(CommandHandler("bridge", bridge_command))
-    application.add_handler(CommandHandler("tokens", tokens_command))
+    application.add_handler(CommandHandler("aurora", aurora_command))
+    application.add_handler(CommandHandler("recent", recent_command))
+    application.add_handler(CommandHandler("balance", balance_command))
     application.run_polling()
 
 if __name__ == "__main__":
